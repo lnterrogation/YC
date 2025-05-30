@@ -1,4 +1,4 @@
-# Managed Service for Kubernetes cluster monitoring with VictoriaMetrics Cluster and vmagent
+# Yandex Cloud Managed Service for Kubernetes cluster monitoring with VictoriaMetrics
 
 ## Описание
 В этом мануале развернём кластер MK8S в Yandex Cloud, установим в него Cluster версию VictoriaMetrics и проверим, можно ли скрейпить метрики. Дополнительно прикрутим к куберу Grafana и дашборды для удобного мониторинга.
