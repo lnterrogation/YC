@@ -7,6 +7,7 @@
 
 Нам понадобятся:
 - Кластер Kubernetes с одной воркер-нодой;
+- Интерфейс командной троки [YC](https://yandex.cloud/ru/docs/cli/quickstart);
 - Интерфейс командной строки [kubectl](https://kubernetes.io/ru/docs/tasks/tools/install-kubectl/);
 - Диспетчер пакетов [helm](https://github.com/helm/helm);
 - ~~Невероятное желание попасть на Т2~~.
