@@ -147,7 +147,7 @@ vmagent-victoria-metrics-agent-6b8c7d86f4-vlqpr                1/1     Running  
 ```
 helm repo add grafana https://grafana.github.io/helm-charts
 ```
-Теперь устанавливаем графану в кластер и добавляем красивые дашборды:
+Теперь устанавливаем графану в кластер и добавляем красивые [дашборды](https://grafana.com/grafana/dashboards/):
 ```
 cat <<EOF | helm install my-grafana grafana/grafana -f -
   datasources:
@@ -265,6 +265,6 @@ Handling connection for 3000
 
 <img width="1153" alt="image" src="https://github.com/user-attachments/assets/68f34733-896c-4d1f-8e6c-60e9961f6794" />
 
-## За сим кланяюсь, приходите позже, ещё че-нибудь напишу.
-
+## Выводы
+По результатам эксперимента можем сказать, что сбор метрик vmagent'ом и дальнейшая трансляция в Grafana корректно работают.
 
