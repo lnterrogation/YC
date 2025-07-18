@@ -1,7 +1,7 @@
 # Развернём кластер Kubernetes на Bridge CNI с помощью YC CLI
 
 ```
-interrogation@Home ~ % yc managed-kubernetes cluster create \
+yc managed-kubernetes cluster create \
 --name test-k8s \
 --network-id <id> \
 --public-ip \
