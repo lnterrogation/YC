@@ -1,3 +1,4 @@
+# Развернём кластер с сетевыми политиками Calico с помощью YC CLI
 ```
 yc managed-kubernetes cluster create \
 --name test-k8s \
