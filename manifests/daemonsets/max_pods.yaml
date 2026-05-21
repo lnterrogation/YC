@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubelet-maxpods-updater
+  namespace: default
+  labels:
+    k8s-app: ds-kubelet-maxpods-updater
+  annotations:
+    author: cameda
+spec:
+  selector:
+    matchLabels:
+      name: kubelet-maxpods-updater
+  template:
+    metadata:
+      labels:
+        name: kubelet-maxpods-updater
+    spec:
+      hostPID: true 
+      containers:
+      - name: kubelet-config-updater
+        image: busybox
+        securityContext:
+          privileged: true
+        command:
+        - /bin/sh
+        - -c
+        - |
+          while true; do
+            echo "Updating kubelet configuration..."
+            sed -i 's/maxPods: .*/maxPods: 128/' /host/home/kubernetes/kubelet-config.yaml
+            echo "Configuration updated. Restarting kubelet on the host..."
+            nsenter -m -u -n -i -p --target 1 -- systemctl restart kubelet
+            echo "Kubelet restarted. Sleeping forever."
+            sleep infinity
+          done
+        volumeMounts:
+        - name: kubelet-maxpods
+          mountPath: /host/home/kubernetes
+      hostNetwork: true
+      restartPolicy: Always
+      hostname: kubelet-maxpods-updater
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      volumes:
+      - name: kubelet-maxpods
+        hostPath:
+          path: /home/kubernetes
