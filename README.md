@@ -1,2 +1,2 @@
 # K8S
-MK8S integrations inside Yandex Cloud
+MK8S in Yandex Cloud
