@@ -1,7 +1,9 @@
 # Yandex Cloud Managed Service for Kubernetes cluster monitoring with VictoriaMetrics
 
 ## Описание
-В этом мануале развернём кластер MK8S в Yandex Cloud, установим в него Cluster версию VictoriaMetrics и проверим, можно ли скрейпить метрики рабочей нагрузки кластера. Дополнительно прикрутим к куберу Grafana и дашборды для удобного мониторинга.
+В этом мануале развернём кластер Managed Service for Kubernetes (MK8S) в Yandex Cloud, установим кластерную версию VictoriaMetrics и настроим сбор метрик с виртуальных машин Yandex Compute Cloud через `yandexcloud_sd_configs`. Дополнительно установим Grafana и готовые дашборды.
+
+> **Важно:** приведённый ниже scrape-конфиг обнаруживает виртуальные машины Yandex Compute Cloud и обращается к `node_exporter` по публичному IP на порту `9100`. Сам по себе он не собирает метрики Kubernetes API, kubelet, kube-state-metrics и пользовательских workloads. Для полного мониторинга Kubernetes используйте [VictoriaMetrics K8s Stack](https://docs.victoriametrics.com/helm/victoriametrics-k8s-stack/) — он устанавливает Operator, VMAgent, node-exporter, kube-state-metrics, Grafana, правила и дашборды одной связкой.
 
 Руководствоваться будем [официальной документацией VictoriaMetrics](https://docs.victoriametrics.com/guides/k8s-monitoring-via-vm-cluster/).
 
@@ -12,17 +14,26 @@
 - Диспетчер пакетов [helm](https://github.com/helm/helm);
 - ~~Невероятное желание попасть на Т2~~.
 
-Эксперимент проводился на кластере с [базовым типом мастера](https://yandex.cloud/ru/docs/managed-kubernetes/concepts/#master) и одной воркер-нодой, версия k8s — 1.30.
+Изначально эксперимент проводился на кластере с [базовым типом мастера](https://yandex.cloud/ru/docs/managed-kubernetes/concepts/#master) и одной воркер-нодой, версия Kubernetes — 1.30. Эта версия приведена только для истории: перед созданием нового кластера посмотрите актуальные доступные версии командой `yc managed-kubernetes list-versions` и выберите поддерживаемую версию в нужном [релизном канале](https://yandex.cloud/ru/docs/managed-kubernetes/concepts/release-channels-and-updates).
 
 ## Начало работы, подготовка окружения
-Создадим кластер Kubernetes, пример команды (подробнее о процессе создания можно прочитать [здесь](https://yandex.cloud/ru/docs/managed-kubernetes/operations/kubernetes-cluster/kubernetes-cluster-create)):
+Зададим используемые далее параметры и посмотрим доступные версии Kubernetes:
+```bash
+export CLUSTER_NAME=test-k8s
+export MONITORING_NAMESPACE=monitoring
+
+yc managed-kubernetes list-versions
+export K8S_VERSION="<актуальная_поддерживаемая_версия>"
 ```
+
+Создадим кластер Kubernetes, пример команды (подробнее о процессе создания можно прочитать [здесь](https://yandex.cloud/ru/docs/managed-kubernetes/operations/kubernetes-cluster/kubernetes-cluster-create)):
+```bash
 yc managed-kubernetes cluster create \
-  --name test-k8s \
+  --name "$CLUSTER_NAME" \
   --network-name default \
   --public-ip \
   --release-channel regular \
-  --version 1.30 \
+  --version "$K8S_VERSION" \
   --cluster-ipv4-range 10.112.0.0/16 \
   --service-ipv4-range 10.96.0.0/16 \
   --security-group-ids enp1m09ssp727hl**** \
@@ -58,25 +69,26 @@ yc managed-kubernetes node-group create \
   --container-network-settings pod-mtu=<значение_MTU_для_подов_группы>
 ```
 Дождёмся, пока все ресурсы перейдут в статус ```Ready```, затем подключимся к кластеру:
+```bash
+yc managed-kubernetes cluster get-credentials "$CLUSTER_NAME" --external
+kubectl create namespace "$MONITORING_NAMESPACE"
 ```
-yc managed-kubernetes cluster \
-   get-credentials <имя_или_идентификатор_кластера> \
-   --external
-```
-Проверим с помощью ```kubectl get pods``` и можем двигаться дальше.
+Проверим подключение с помощью `kubectl cluster-info` и `kubectl get nodes`. Все узлы должны перейти в состояние `Ready`.
 
 ## Установка VM Cluster и vmagent
 Сначала добавим репозиторий VictoriaMetrics и установим нужный helm-чарт в кластер.
 
-Неймспейс использовался ```test```, учитывайте это при указании ```remoteWrite```, иначе получите кучу совсем не интересных ошибок.
+Во всех командах ниже используется namespace из переменной `$MONITORING_NAMESPACE`. Namespace в адресах `remoteWrite` и datasource должен совпадать с namespace релиза VictoriaMetrics.
 
 Репозиторий:
-```
+```bash
 helm repo add vm https://victoriametrics.github.io/helm-charts/
+helm repo update vm
 ```
 Установка:
-```
-cat <<EOF | helm install vmcluster vm/victoria-metrics-cluster -f -
+```bash
+cat <<'EOF' | helm upgrade --install vmcluster vm/victoria-metrics-cluster \
+  --namespace "$MONITORING_NAMESPACE" --wait --timeout 10m -f -
 vmselect:
   podAnnotations:
       prometheus.io/scrape: "true"
@@ -106,16 +118,28 @@ vmcluster-victoria-metrics-cluster-vmstorage-1                 1/1     Running  
 ```
 Затем установим сущность, которая и будет скрейпить метрики нашего кластера — ```vmagent```.
 
-Команда:
+Аутентифицироваться будем с помощью [OAuth-токена](https://yandex.cloud/ru/docs/iam/concepts/authorization/oauth-token). Не записывайте токен в Git и в `values.yaml`: создайте Kubernetes Secret из переменной окружения.
+
+```bash
+read -s YC_OAUTH_TOKEN
+export YC_OAUTH_TOKEN
+kubectl --namespace "$MONITORING_NAMESPACE" create secret generic yc-monitoring-oauth \
+  --from-literal=token="$YC_OAUTH_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset YC_OAUTH_TOKEN
 ```
-helm install vmagent vm/victoria-metrics-agent -f yc-scrape-config.yaml
-```
-Аутентифицироваться будем с помощью [OAuth-токена](https://yandex.cloud/ru/docs/iam/concepts/authorization/oauth-token).
 
 Содержимое файла ```yc-scrape-config.yaml``` (пример можно найти в [официальной документации VictoriaMetrics](https://docs.victoriametrics.com/victoriametrics/sd_configs/#yandexcloud_sd_configs)):
-```
+```yaml
 remoteWrite:
-  - url: http://vmcluster-victoria-metrics-cluster-vminsert.test.svc.cluster.local:8480/insert/0/prometheus/
+  - url: http://vmcluster-victoria-metrics-cluster-vminsert.monitoring.svc.cluster.local:8480/insert/0/prometheus/
+
+env:
+  - name: YC_OAUTH_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: yc-monitoring-oauth
+        key: token
 
 config:
   global:
@@ -125,12 +149,24 @@ scrape_configs:
 - job_name: YC_with_oauth
   yandexcloud_sd_configs:
   - service: compute
-    yandex_passport_oauth_token: "OAuth_token_here"
+    yandex_passport_oauth_token: "%{YC_OAUTH_TOKEN}"
   relabel_configs:
   - source_labels: [__meta_yandexcloud_instance_public_ip_0]
     target_label: __address__
     replacement: "$1:9100"
 ```
+
+Установим или обновим `vmagent` и дождёмся готовности:
+```bash
+helm upgrade --install vmagent vm/victoria-metrics-agent \
+  --namespace "$MONITORING_NAMESPACE" \
+  --wait --timeout 10m \
+  -f yc-scrape-config.yaml
+
+kubectl --namespace "$MONITORING_NAMESPACE" rollout status deployment/vmagent-victoria-metrics-agent
+```
+
+Если `vmagent` работает внутри Yandex Cloud с подходящим сервисным аккаунтом, `yandex_passport_oauth_token` можно не задавать: VictoriaMetrics поддерживает аутентификацию через сервисный аккаунт инстанса. Для production это предпочтительнее долгоживущего пользовательского OAuth-токена.
 Проверим, как себя чувствует под ```vmagent```:
 ```
 ~ % kubectl get pods
@@ -144,12 +180,14 @@ vmagent-victoria-metrics-agent-6b8c7d86f4-vlqpr                1/1     Running  
 ## Установка Grafana, вывод метрик на дашборды
 
 Всё как раньше, добавляем репозиторий Grafana:
-```
-helm repo add grafana https://grafana.github.io/helm-charts
+```bash
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
+helm repo update grafana-community
 ```
 Теперь устанавливаем графану в кластер и добавляем красивые [дашборды](https://grafana.com/grafana/dashboards/):
 ```
-cat <<EOF | helm install my-grafana grafana/grafana -f -
+cat <<'EOF' | helm upgrade --install my-grafana grafana-community/grafana \
+  --namespace "$MONITORING_NAMESPACE" --wait --timeout 10m -f -
   datasources:
     datasources.yaml:
       apiVersion: 1
@@ -157,7 +195,7 @@ cat <<EOF | helm install my-grafana grafana/grafana -f -
         - name: victoriametrics
           type: prometheus
           orgId: 1
-          url: http://vmcluster-victoria-metrics-cluster-vmselect.test.svc.cluster.local:8481/select/0/prometheus/
+          url: http://vmcluster-victoria-metrics-cluster-vmselect.monitoring.svc.cluster.local:8481/select/0/prometheus/
           access: proxy
           isDefault: true
           updateIntervalSeconds: 10
@@ -245,19 +283,26 @@ Handling connection for 3000
 
 ## Проверка
 
+Сначала проверьте цели и ошибки скрейпа в интерфейсе `vmagent`:
+```bash
+kubectl --namespace "$MONITORING_NAMESPACE" port-forward service/vmagent-victoria-metrics-agent 8429:8429
+```
+
+Откройте <http://127.0.0.1:8429/targets>. У каждой ожидаемой цели должен быть статус `UP`; ошибки discovery и scrape будут видны на этой странице.
+
 Наслаждаемся результатом и идём смотреть, какие метрики скрейпит наш VictoriaMetrics.
 
 Установлены три дашборда:
 
-```Kubernetes Cluster Monitoring (via Prometheus)```:
+`Kubernetes Cluster Monitoring (via Prometheus)`:
 
 <img width="1151" alt="image" src="https://github.com/user-attachments/assets/5b47918b-d570-4928-a6e4-604351d5a314" />
 
-```VictoriaMetrics - cluster```:
+`VictoriaMetrics - cluster`:
 
 <img width="1150" alt="image" src="https://github.com/user-attachments/assets/a9808e54-139a-4bb1-9031-aa771daa2d4c" />
 
-```vmagent```:
+`vmagent`:
 
 <img width="1151" alt="image" src="https://github.com/user-attachments/assets/c91d11bd-7851-4fb4-8576-cedbdec979f9" />
 
@@ -266,5 +311,4 @@ Handling connection for 3000
 <img width="1153" alt="image" src="https://github.com/user-attachments/assets/68f34733-896c-4d1f-8e6c-60e9961f6794" />
 
 ## Выводы
-По результатам эксперимента можем сказать, что сбор метрик vmagent'ом и дальнейшая трансляция в Grafana корректно работают.
-
+По результатам эксперимента можем сказать, что `vmagent` обнаруживает доступные виртуальные машины Yandex Compute Cloud, собирает опубликованные ими метрики и отправляет данные в VictoriaMetrics для запросов и визуализации в Grafana. Для полноценного мониторинга компонентов и workloads Kubernetes используйте VictoriaMetrics K8s Stack, указанный в начале руководства.
